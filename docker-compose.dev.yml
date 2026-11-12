@@ -1,0 +1,77 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-app}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-app}
+      POSTGRES_DB: ${POSTGRES_DB:-app}
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.dev
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-app}:${POSTGRES_PASSWORD:-app}@db:5432/${POSTGRES_DB:-app}
+      WATCHFILES_FORCE_POLLING: "true"
+      # Set one of these in .env: an OAuth token uses your Claude Pro/Max plan, an API key bills the API.
+      CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      CLAUDE_WORKSPACE: /workspace
+      # Keep Claude Code's session transcripts so conversations can resume after restarts.
+      CLAUDE_CONFIG_DIR: /claude-config
+      MAX_CONCURRENT_TURNS: ${MAX_CONCURRENT_TURNS:-3}
+      # The URL the top bar's "Add agent" dialog starts with (default: ../info-center's MCP endpoint).
+      AGENT_MCP_URL: ${AGENT_MCP_URL:-http://host.docker.internal:8765/mcp}
+    # Lets the container reach services on the host (like info-center) on Linux too; Docker Desktop has it built in.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "8766:8766"
+    volumes:
+      - ./backend:/app
+      # The directory Claude Code works in (reads, writes, runs commands).
+      - ./workspace:/workspace
+      - claude-config:/claude-config
+    depends_on:
+      db:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    environment:
+      API_PROXY_TARGET: http://backend:8766
+      VITE_USE_POLLING: "true"
+    ports:
+      - "5679:5679"
+    volumes:
+      - ./frontend:/app
+      # Keep the container's node_modules instead of the (possibly empty) host one.
+      - /app/node_modules
+    depends_on:
+      - backend
+
+  # Database browser (tables, rows, SQL). Bound to localhost because pgweb has no login.
+  pgweb:
+    image: sosedoff/pgweb:0.17.0
+    environment:
+      PGWEB_DATABASE_URL: postgres://${POSTGRES_USER:-app}:${POSTGRES_PASSWORD:-app}@db:5432/${POSTGRES_DB:-app}?sslmode=disable
+    ports:
+      - "127.0.0.1:8082:8081"
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+  claude-config:
